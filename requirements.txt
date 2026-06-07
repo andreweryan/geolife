@@ -1,0 +1,5 @@
+polars
+pandas
+geopandas
+pyarrow
+tqdm

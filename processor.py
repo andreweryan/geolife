@@ -103,15 +103,17 @@ def process_data(path: str, resample: str = "10s") -> pl.DataFrame:
     )
 
     df = df.with_columns(
-        pl.col(["timestamp", "end_timestamp"]),
-        delta=((pl.col("end_timestamp").sub(pl.col("timestamp")) / 1000000) / 3600),
-    )
-
-    df = df.rename({"delta": "time_delta_hr"})
+    (
+        (pl.col("end_timestamp") - pl.col("timestamp"))
+        .dt.total_seconds()
+        / 3600.0
+    ).alias("time_delta_hr")
+)
 
     df = df.with_columns(
-        (pl.col("distance_kilometers") / pl.col("time_delta_hr")).alias("speed_kmh")
-    )
+    (pl.col("distance_kilometers") / pl.col("time_delta_hr"))
+    .alias("speed_kmh")
+)
 
     df = df.filter(
         # (pl.col("distance_kilometers") > 0.05)
@@ -142,9 +144,9 @@ def trip_to_line(row) -> LineString:
 if __name__ == "__main__":
     start = datetime.now()
 
-    data_dir = r"C:\Projects\data\geolife\Data"
+    data_dir = r"C:\Users\andrr\Documents\dev\data\geolife\Data"
 
-    files = glob(r"C:\Projects\data\geolife\Data\*\*\*.plt")
+    files = glob(r"C:\Users\andrr\Documents\dev\data\geolife\Data\*\*\*.plt")
 
     resample = None  # "30s"
 
