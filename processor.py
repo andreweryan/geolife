@@ -54,9 +54,6 @@ def process_data(path: str, resample: str | None = "10s") -> str:
         },
     )
 
-    # ----------------------------
-    # Timestamp
-    # ----------------------------
     df = (
         df.with_columns(
             (
@@ -71,9 +68,6 @@ def process_data(path: str, resample: str | None = "10s") -> str:
         .with_columns(pl.lit(user_id).alias("user_id"))
     )
 
-    # ----------------------------
-    # Resample (optional)
-    # ----------------------------
     if resample:
         df = (
             df.sort("timestamp")
@@ -86,23 +80,15 @@ def process_data(path: str, resample: str | None = "10s") -> str:
             )
         )
 
-    # ----------------------------
-    # Sort ONCE (critical)
-    # ----------------------------
     df = df.sort(["user_id", "timestamp"])
 
-    # ----------------------------
-    # Shift-based trajectory build
-    # ----------------------------
+
     df = df.with_columns([
         pl.col("timestamp").shift(-1).over("user_id").alias("end_timestamp"),
         pl.col("latitude").shift(-1).over("user_id").alias("end_latitude"),
         pl.col("longitude").shift(-1).over("user_id").alias("end_longitude"),
     ]).drop_nulls(["end_timestamp", "end_latitude", "end_longitude"])
 
-    # ----------------------------
-    # Vectorized haversine
-    # ----------------------------
     df = df.with_columns([
         pl.col("latitude").radians().alias("lat1_rad"),
         pl.col("longitude").radians().alias("lon1_rad"),
@@ -114,9 +100,6 @@ def process_data(path: str, resample: str | None = "10s") -> str:
         haversine_polars().alias("distance_km")
     ).drop(["lat1_rad", "lon1_rad", "lat2_rad", "lon2_rad"])
 
-    # ----------------------------
-    # Time delta (hours)
-    # ----------------------------
     df = df.with_columns(
         (
             (pl.col("end_timestamp") - pl.col("timestamp"))
@@ -125,24 +108,15 @@ def process_data(path: str, resample: str | None = "10s") -> str:
         ).alias("time_delta_hr")
     ).filter(pl.col("time_delta_hr") > 0)
 
-    # ----------------------------
-    # Speed
-    # ----------------------------
     df = df.with_columns(
         (pl.col("distance_km") / pl.col("time_delta_hr")).alias("speed_kmh")
     )
 
-    # ----------------------------
-    # Filter unrealistic movement
-    # ----------------------------
     df = df.filter(
         (pl.col("speed_kmh") >= 5)
         & (pl.col("speed_kmh") <= 100)
     )
 
-    # ----------------------------
-    # Write per-worker parquet
-    # ----------------------------
     os.makedirs(TMP_DIR, exist_ok=True)
     out_path = os.path.join(TMP_DIR, f"{user_id}_{Path(path).stem}.parquet")
     df.write_parquet(out_path)
@@ -155,12 +129,10 @@ def trip_to_line(row) -> LineString:
         (row["end_longitude"], row["end_latitude"]),
     ])
 
-
-# ----------------------------
-# Main
-# ----------------------------
-
 if __name__ == "__main__":
+    import shutil
+
+    resample = "10s"
     start = datetime.now()
 
     data_dir = r"C:\Users\andrr\Documents\dev\data\geolife\Data"
@@ -171,7 +143,7 @@ if __name__ == "__main__":
     with tqdm(total=len(files), desc="Processing") as pbar:
         with ProcessPoolExecutor() as executor:
             futures = [
-                executor.submit(process_data, f, "10s")
+                executor.submit(process_data, f, resample)
                 for f in files
             ]
 
@@ -188,6 +160,8 @@ if __name__ == "__main__":
     print(df.shape)
     print(df.head())
 
+    shutil.rmtree(TMP_DIR)
+
     # ----------------------------
     # OPTIONAL: build GeoDataFrame only if needed
     # ----------------------------
@@ -202,7 +176,33 @@ if __name__ == "__main__":
 
     print(gdf.head())
 
+    if not resample:
+        out_path = os.path.join(os.path.dirname(data_dir), "geolife_points.parquet")
+    else:
+        out_path = os.path.join(
+            os.path.dirname(data_dir), f"geolife_points_{resample}.parquet"
+        )
+
+    gdf.to_parquet(out_path)
+
     end = datetime.now()
     print(f"Total processing time: {end - start}")
-    
-    os.remove(TMP_DIR)
+
+     # process trip points to lines/trajectories
+    gdf["line_geom"] = gdf.apply(lambda row: trip_to_line(row), axis=1)
+    gdf.drop("geometry", axis=1, inplace=True)
+    gdf.rename(columns={"line_geom": "geometry"}, inplace=True)
+    gdf.set_geometry("geometry", inplace=True)
+    gdf.set_crs("EPSG:4326", inplace=True)
+
+    if not resample:
+        out_path = os.path.join(os.path.dirname(data_dir), "geolife_lines.parquet")
+    else:
+        out_path = os.path.join(
+            os.path.dirname(data_dir), f"geolife_lines_{resample}.parquet"
+        )
+
+    gdf.to_parquet(out_path)
+
+    end = datetime.now()
+    print(f"Total processing time: {end - start}")
